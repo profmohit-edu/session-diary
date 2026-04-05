@@ -6,6 +6,9 @@ import json
 import os
 from dateutil import parser as dateparser
 from openai import OpenAI
+from PIL import Image
+import io
+import base64
 
 DB_PATH = "sessions.db"
 
@@ -83,25 +86,24 @@ def insert_session(data):
     conn.close()
 
 def load_sessions():
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
     conn = get_conn()
     df = pd.read_sql_query("SELECT * FROM sessions", conn)
     conn.close()
     return df
 
-# ---------- AI parsing ----------
+# ---------- AI helpers ----------
 
-def call_ai_parser(raw_text: str):
+def get_client():
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         st.error("OPENAI_API_KEY not set. Please configure it in Streamlit secrets.")
         return None
+    return OpenAI(api_key=api_key)
 
-    client = OpenAI(api_key=api_key)
-
-    today_str = date.today().isoformat()
-
-    system_prompt = """
-You are an assistant that extracts session (talk/lecture/workshop) details from WhatsApp-style text.
+BASE_SYSTEM_PROMPT = """
+You are an assistant that extracts session (talk/lecture/workshop) details from invites.
 
 Return ONLY valid JSON with this exact structure:
 
@@ -127,6 +129,13 @@ Rules:
 - meeting_link should include Zoom/Meet/Teams/Webex link if present, else empty string.
 """
 
+def call_ai_parser_from_text(raw_text: str):
+    client = get_client()
+    if not client:
+        return None
+
+    today_str = date.today().isoformat()
+
     user_prompt = f"""
 Today's date is: {today_str}
 
@@ -139,23 +148,67 @@ Extract one session from this text:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": BASE_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
         )
         content = resp.choices[0].message.content
-        try:
-            data = json.loads(content)
-        except Exception:
-            st.error("AI returned invalid JSON. Please click 'AI Parse & Prefill' again or fill manually.")
-            return None
-        # Basic sanity check
+        data = json.loads(content)
         if not data.get("date_iso") or not data.get("start_time_24h"):
             st.warning("AI could not detect date or time properly. Please fill those fields manually below.")
         return data
     except Exception as e:
-        st.error(f"Error calling AI parser: {e}")
+        st.error(f"Error calling AI parser (text): {e}")
+        return None
+
+def image_to_base64(img_bytes: bytes) -> str:
+    return base64.b64encode(img_bytes).decode("utf-8")
+
+def call_ai_parser_from_image(file) -> dict | None:
+    client = get_client()
+    if not client:
+        return None
+
+    try:
+        img_bytes = file.read()
+        b64 = image_to_base64(img_bytes)
+        today_str = date.today().isoformat()
+
+        user_prompt = f"""
+Today's date is: {today_str}
+
+You are given an invite poster or schedule as an image.
+Read all the visible text and extract ONE session using the JSON schema.
+If there are multiple sessions, pick the one that is most clearly a talk *I* am giving.
+"""
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": BASE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64}"
+                            },
+                        },
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        data = json.loads(content)
+        if not data.get("date_iso") or not data.get("start_time_24h"):
+            st.warning("AI (image) could not detect date or time properly. Please fill those fields manually below.")
+        return data
+    except Exception as e:
+        st.error(f"Error calling AI parser (image): {e}")
         return None
 
 # ---------- Streamlit UI ----------
@@ -164,14 +217,9 @@ st.set_page_config(page_title="Session Diary", layout="wide")
 st.title("Session Diary – AI Assisted")
 
 init_db()
+df_sessions = load_sessions()
 
-st.markdown("Paste WhatsApp invite → AI parses → you confirm → saved.")
-
-# Load existing sessions
-if os.path.exists(DB_PATH):
-    df_sessions = load_sessions()
-else:
-    df_sessions = pd.DataFrame()
+st.markdown("Paste WhatsApp invite **or** upload poster → AI parses → you confirm → saved.")
 
 # ---------- Today / Tomorrow strip ----------
 
@@ -229,45 +277,66 @@ if not df_sessions.empty:
             "meeting_link": "Link"
         }, inplace=True)
 
-        st.dataframe(df_show, use_container_width=True)
+        # simple visual urgency using style
+        def highlight_row(row):
+            color = "background-color: #ffe5e5" if row["⚠️ PPT Pending"] == "YES" else ""
+            return [color] * len(row)
+
+        st.dataframe(
+            df_show.style.apply(highlight_row, axis=1),
+            use_container_width=True
+        )
 else:
     st.info("No sessions logged yet.")
 
 st.markdown("---")
 
-# ---------- Paste + AI parse ----------
+# ---------- Invite input: text OR image ----------
 
-st.subheader("Paste WhatsApp invite")
+st.subheader("Invite Input")
 
-raw_text = st.text_area("Paste the full invite text here", height=180)
-
-col_parse, col_reset = st.columns([1, 1])
+tab_text, tab_image = st.tabs(["Paste text", "Upload image"])
 
 if "parsed_data" not in st.session_state:
     st.session_state["parsed_data"] = None
 
-with col_parse:
-    if st.button("AI Parse & Prefill") and raw_text.strip():
-        data = call_ai_parser(raw_text.strip())
-        if data:
-            st.session_state["parsed_data"] = data
-            st.success("Parsed. Check and confirm below.")
-with col_reset:
-    if st.button("Clear parsed data"):
-        st.session_state["parsed_data"] = None
+with tab_text:
+    raw_text = st.text_area("Paste the full invite text here", height=180)
+    col_parse, col_reset = st.columns([1, 1])
+
+    with col_parse:
+        if st.button("AI Parse from Text") and raw_text.strip():
+            data = call_ai_parser_from_text(raw_text.strip())
+            if data:
+                st.session_state["parsed_data"] = data
+                st.success("Parsed from text. Check and confirm below.")
+    with col_reset:
+        if st.button("Clear parsed data (text)"):
+            st.session_state["parsed_data"] = None
+
+with tab_image:
+    uploaded = st.file_uploader("Upload invite poster/schedule (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    col_parse_img, col_reset_img = st.columns([1, 1])
+
+    with col_parse_img:
+        if st.button("AI Parse from Image") and uploaded is not None:
+            data = call_ai_parser_from_image(uploaded)
+            if data:
+                st.session_state["parsed_data"] = data
+                st.success("Parsed from image. Check and confirm below.")
+    with col_reset_img:
+        if st.button("Clear parsed data (image)"):
+            st.session_state["parsed_data"] = None
 
 parsed = st.session_state.get("parsed_data") or {}
 
-# Ensure at least date/time warning if missing
-if parsed:
-    if not parsed.get("date_iso") or not parsed.get("start_time_24h"):
-        st.warning("AI could not detect date or time properly. Please fill those fields manually below.")
+if parsed and (not parsed.get("date_iso") or not parsed.get("start_time_24h")):
+    st.warning("AI could not detect date or time properly. Please fill those fields manually below.")
 
 # ---------- Form to confirm/save ----------
 
 st.subheader("Confirm Session Details")
 
-# Defaults from parsed data
 def_str_date = parsed.get("date_iso") or date.today().isoformat()
 try:
     def_date = datetime.fromisoformat(def_str_date).date()
@@ -345,7 +414,6 @@ if not df_sessions.empty:
     df_all["session_datetime"] = pd.to_datetime(df_all["session_datetime"])
     df_all = df_all.sort_values("session_datetime", ascending=True)
 
-    # Filters
     colf1, colf2 = st.columns(2)
     with colf1:
         show_future_only = st.checkbox("Show only future sessions", value=True)
