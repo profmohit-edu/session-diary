@@ -196,4 +196,85 @@ else:
     st.info("No sessions logged yet.")
 
 st.markdown("---")
+# ---------- Upcoming in next 3 days ----------
+
+st.subheader("⚠️ Upcoming Sessions (Next 3 Days)")
+
+if not df_sessions.empty:
+    df_up = df_sessions.copy()
+    df_up["session_datetime"] = pd.to_datetime(df_up["session_datetime"])
+    now = datetime.now()
+    three_days = now + timedelta(days=3)
+    mask = (df_up["session_datetime"] >= now) & (df_up["session_datetime"] <= three_days)
+    df_up = df_up[mask].sort_values("session_datetime")
+
+    if df_up.empty:
+        st.info("No sessions in the next 3 days.")
+    else:
+        df_show = df_up[[
+            "session_datetime", "topic", "institution",
+            "ppt_status", "meeting_link", "notes"
+        ]].copy()
+
+        df_show["⚠️ PPT Pending"] = df_show["ppt_status"].apply(
+            lambda x: "YES" if x != "Ready" else ""
+        )
+
+        df_show.rename(columns={
+            "session_datetime": "Date & Time",
+            "meeting_link": "Link"
+        }, inplace=True)
+
+        st.dataframe(df_show, use_container_width=True)
+else:
+    st.info("No sessions logged yet.")
+
+st.markdown("---")
+
+# ---------- Paste + AI parse ----------
+
+st.subheader("Paste WhatsApp invite")
+
+raw_text = st.text_area("Paste the full invite text here", height=180)
+
+col_parse, col_reset = st.columns([1, 1])
+
+if "parsed_data" not in st.session_state:
+    st.session_state["parsed_data"] = None
+
+with col_parse:
+    if st.button("AI Parse & Prefill") and raw_text.strip():
+        data = call_ai_parser(raw_text.strip())
+        if data:
+            st.session_state["parsed_data"] = data
+            st.success("Parsed. Check and confirm below.")
+with col_reset:
+    if st.button("Clear parsed data"):
+        st.session_state["parsed_data"] = None
+
+parsed = st.session_state.get("parsed_data") or {}
+
+# Ensure at least date/time warning if missing
+if parsed:
+    if not parsed.get("date_iso") or not parsed.get("start_time_24h"):
+        st.warning("AI could not detect date or time properly. Please fill those fields manually below.")
+
+# ---------- Form to confirm/save ----------
+
+st.subheader("Confirm Session Details")
+
+# Defaults from parsed data
+def_str_date = parsed.get("date_iso") or date.today().isoformat()
+try:
+    def_date = datetime.fromisoformat(def_str_date).date()
+except Exception:
+    def_date = date.today()
+
+def_str_time = parsed.get("start_time_24h") or "11:00"
+try:
+    def_time = datetime.strptime(def_str_time, "%H:%M").time()
+except Exception:
+    def_time = time(11, 0)
+
+def_duration = 
 
