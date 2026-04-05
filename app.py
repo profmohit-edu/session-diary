@@ -168,7 +168,10 @@ init_db()
 st.markdown("Paste WhatsApp invite → AI parses → you confirm → saved.")
 
 # Load existing sessions
-df_sessions = load_sessions() if os.path.exists(DB_PATH) else pd.DataFrame()
+if os.path.exists(DB_PATH):
+    df_sessions = load_sessions()
+else:
+    df_sessions = pd.DataFrame()
 
 # ---------- Today / Tomorrow strip ----------
 
@@ -196,6 +199,7 @@ else:
     st.info("No sessions logged yet.")
 
 st.markdown("---")
+
 # ---------- Upcoming in next 3 days ----------
 
 st.subheader("⚠️ Upcoming Sessions (Next 3 Days)")
@@ -276,5 +280,84 @@ try:
 except Exception:
     def_time = time(11, 0)
 
-def_duration = 
+def_duration = parsed.get("duration_min") or 60
 
+with st.form("session_form"):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        s_date = st.date_input("Date", value=def_date)
+    with c2:
+        s_time = st.time_input("Start time", value=def_time)
+    with c3:
+        duration_min = st.number_input("Duration (minutes)", min_value=10, max_value=600, value=int(def_duration), step=5)
+
+    topic = st.text_input("Topic / Title", value=parsed.get("topic") or "")
+    c4, c5 = st.columns(2)
+    with c4:
+        organizer_name = st.text_input("Organizer name", value=parsed.get("organizer_name") or "")
+        institution = st.text_input("Institution", value=parsed.get("institution") or "")
+    with c5:
+        contact_whatsapp = st.text_input("WhatsApp / Phone", value=parsed.get("contact_whatsapp") or "")
+        mode = st.selectbox("Mode", ["Online", "Offline"], index=0 if (parsed.get("mode") or "Online") == "Online" else 1)
+        platform_or_venue = st.text_input("Platform / Venue", value=parsed.get("platform_or_venue") or "")
+
+    meeting_link = st.text_input("Meeting link", value=parsed.get("meeting_link") or "")
+    ppt_status = st.selectbox("PPT status", ["Not Started", "In Progress", "Ready"], index=0)
+    notes = st.text_area("Notes", height=60, value=parsed.get("notes") or "")
+
+    submitted = st.form_submit_button("Save session")
+
+    if submitted:
+        s_datetime = datetime.combine(s_date, s_time)
+        reminder1_at = s_datetime - timedelta(days=2)
+        reminder2_at = s_datetime - timedelta(hours=1)
+
+        row = {
+            "date_iso": s_date.isoformat(),
+            "start_time_24h": s_time.strftime("%H:%M"),
+            "session_datetime": s_datetime.isoformat(),
+            "duration_min": int(duration_min),
+            "topic": topic,
+            "institution": institution,
+            "organizer_name": organizer_name,
+            "contact_whatsapp": contact_whatsapp,
+            "mode": mode,
+            "platform_or_venue": platform_or_venue,
+            "meeting_link": meeting_link,
+            "notes": notes,
+            "ppt_status": ppt_status,
+            "reminder1_at": reminder1_at.isoformat(),
+            "reminder2_at": reminder2_at.isoformat(),
+        }
+        insert_session(row)
+        st.success("Session saved.")
+        st.session_state["parsed_data"] = None  # Clear parsed data after save
+
+st.markdown("---")
+
+# ---------- All Sessions ----------
+
+st.subheader("All Sessions")
+
+df_sessions = load_sessions()
+if not df_sessions.empty:
+    df_all = df_sessions.copy()
+    df_all["session_datetime"] = pd.to_datetime(df_all["session_datetime"])
+    df_all = df_all.sort_values("session_datetime", ascending=True)
+
+    # Filters
+    colf1, colf2 = st.columns(2)
+    with colf1:
+        show_future_only = st.checkbox("Show only future sessions", value=True)
+    with colf2:
+        ppt_filter = st.multiselect("Filter by PPT status", options=["Not Started", "In Progress", "Ready"])
+
+    if show_future_only:
+        df_all = df_all[df_all["session_datetime"] >= datetime.now()]
+
+    if ppt_filter:
+        df_all = df_all[df_all["ppt_status"].isin(ppt_filter)]
+
+    st.dataframe(df_all, use_container_width=True)
+else:
+    st.info("No sessions logged yet.")
