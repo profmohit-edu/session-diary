@@ -6,8 +6,6 @@ import json
 import os
 from dateutil import parser as dateparser
 from openai import OpenAI
-from PIL import Image
-import io
 import base64
 
 DB_PATH = "sessions.db"
@@ -162,17 +160,17 @@ Extract one session from this text:
         st.error(f"Error calling AI parser (text): {e}")
         return None
 
-def image_to_base64(img_bytes: bytes) -> str:
+def image_bytes_to_b64(img_bytes: bytes) -> str:
     return base64.b64encode(img_bytes).decode("utf-8")
 
-def call_ai_parser_from_image(file) -> dict | None:
+def call_ai_parser_from_image(file):
     client = get_client()
     if not client:
         return None
 
     try:
         img_bytes = file.read()
-        b64 = image_to_base64(img_bytes)
+        b64 = image_bytes_to_b64(img_bytes)
         today_str = date.today().isoformat()
 
         user_prompt = f"""
@@ -180,7 +178,7 @@ Today's date is: {today_str}
 
 You are given an invite poster or schedule as an image.
 Read all the visible text and extract ONE session using the JSON schema.
-If there are multiple sessions, pick the one that is most clearly a talk *I* am giving.
+If there are multiple sessions, pick the one that is most clearly a talk I am giving.
 """
 
         resp = client.chat.completions.create(
@@ -193,9 +191,7 @@ If there are multiple sessions, pick the one that is most clearly a talk *I* am 
                         {"type": "text", "text": user_prompt},
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64}"
-                            },
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
                         },
                     ],
                 },
@@ -215,6 +211,18 @@ If there are multiple sessions, pick the one that is most clearly a talk *I* am 
 
 st.set_page_config(page_title="Session Diary", layout="wide")
 st.title("Session Diary – AI Assisted")
+
+st.markdown(
+    """
+    *Designed and used by* **Prof. Mohit Tiwari**  
+    Assistant Professor | Cybersecurity & AI Research | BVCOE Delhi  
+
+    [Google Scholar](https://scholar.google.com/citations?user=ZFRPBBcAAAAJ&hl=en&authuser=2) · 
+    [ORCID](https://orcid.org/0000-0003-1836-3451) · 
+    [LinkedIn](https://linkedin.com/in/mtiw)
+    """
+)
+st.markdown("---")
 
 init_db()
 df_sessions = load_sessions()
@@ -239,7 +247,7 @@ if not df_sessions.empty:
     if not df_tmp.empty:
         st.dataframe(
             df_tmp[["session_datetime", "topic", "institution", "ppt_status"]],
-            use_container_width=True
+            use_container_width=True,
         )
     else:
         st.info("No sessions today or tomorrow.")
@@ -263,28 +271,36 @@ if not df_sessions.empty:
     if df_up.empty:
         st.info("No sessions in the next 3 days.")
     else:
-        df_show = df_up[[
-            "session_datetime", "topic", "institution",
-            "ppt_status", "meeting_link", "notes"
-        ]].copy()
+        df_show = df_up[
+            [
+                "session_datetime",
+                "topic",
+                "institution",
+                "ppt_status",
+                "meeting_link",
+                "notes",
+            ]
+        ].copy()
 
         df_show["⚠️ PPT Pending"] = df_show["ppt_status"].apply(
             lambda x: "YES" if x != "Ready" else ""
         )
 
-        df_show.rename(columns={
-            "session_datetime": "Date & Time",
-            "meeting_link": "Link"
-        }, inplace=True)
+        df_show.rename(
+            columns={
+                "session_datetime": "Date & Time",
+                "meeting_link": "Link",
+            },
+            inplace=True,
+        )
 
-        # simple visual urgency using style
         def highlight_row(row):
             color = "background-color: #ffe5e5" if row["⚠️ PPT Pending"] == "YES" else ""
             return [color] * len(row)
 
         st.dataframe(
             df_show.style.apply(highlight_row, axis=1),
-            use_container_width=True
+            use_container_width=True,
         )
 else:
     st.info("No sessions logged yet.")
@@ -315,7 +331,9 @@ with tab_text:
             st.session_state["parsed_data"] = None
 
 with tab_image:
-    uploaded = st.file_uploader("Upload invite poster/schedule (PNG/JPG)", type=["png", "jpg", "jpeg"])
+    uploaded = st.file_uploader(
+        "Upload invite poster/schedule (PNG/JPG)", type=["png", "jpg", "jpeg"]
+    )
     col_parse_img, col_reset_img = st.columns([1, 1])
 
     with col_parse_img:
@@ -331,7 +349,9 @@ with tab_image:
 parsed = st.session_state.get("parsed_data") or {}
 
 if parsed and (not parsed.get("date_iso") or not parsed.get("start_time_24h")):
-    st.warning("AI could not detect date or time properly. Please fill those fields manually below.")
+    st.warning(
+        "AI could not detect date or time properly. Please fill those fields manually below."
+    )
 
 # ---------- Form to confirm/save ----------
 
@@ -358,20 +378,42 @@ with st.form("session_form"):
     with c2:
         s_time = st.time_input("Start time", value=def_time)
     with c3:
-        duration_min = st.number_input("Duration (minutes)", min_value=10, max_value=600, value=int(def_duration), step=5)
+        duration_min = st.number_input(
+            "Duration (minutes)",
+            min_value=10,
+            max_value=600,
+            value=int(def_duration),
+            step=5,
+        )
 
     topic = st.text_input("Topic / Title", value=parsed.get("topic") or "")
     c4, c5 = st.columns(2)
     with c4:
-        organizer_name = st.text_input("Organizer name", value=parsed.get("organizer_name") or "")
-        institution = st.text_input("Institution", value=parsed.get("institution") or "")
+        organizer_name = st.text_input(
+            "Organizer name", value=parsed.get("organizer_name") or ""
+        )
+        institution = st.text_input(
+            "Institution", value=parsed.get("institution") or ""
+        )
     with c5:
-        contact_whatsapp = st.text_input("WhatsApp / Phone", value=parsed.get("contact_whatsapp") or "")
-        mode = st.selectbox("Mode", ["Online", "Offline"], index=0 if (parsed.get("mode") or "Online") == "Online" else 1)
-        platform_or_venue = st.text_input("Platform / Venue", value=parsed.get("platform_or_venue") or "")
+        contact_whatsapp = st.text_input(
+            "WhatsApp / Phone", value=parsed.get("contact_whatsapp") or ""
+        )
+        mode = st.selectbox(
+            "Mode",
+            ["Online", "Offline"],
+            index=0 if (parsed.get("mode") or "Online") == "Online" else 1,
+        )
+        platform_or_venue = st.text_input(
+            "Platform / Venue", value=parsed.get("platform_or_venue") or ""
+        )
 
-    meeting_link = st.text_input("Meeting link", value=parsed.get("meeting_link") or "")
-    ppt_status = st.selectbox("PPT status", ["Not Started", "In Progress", "Ready"], index=0)
+    meeting_link = st.text_input(
+        "Meeting link", value=parsed.get("meeting_link") or ""
+    )
+    ppt_status = st.selectbox(
+        "PPT status", ["Not Started", "In Progress", "Ready"], index=0
+    )
     notes = st.text_area("Notes", height=60, value=parsed.get("notes") or "")
 
     submitted = st.form_submit_button("Save session")
@@ -400,7 +442,7 @@ with st.form("session_form"):
         }
         insert_session(row)
         st.success("Session saved.")
-        st.session_state["parsed_data"] = None  # Clear parsed data after save
+        st.session_state["parsed_data"] = None
 
 st.markdown("---")
 
@@ -418,7 +460,10 @@ if not df_sessions.empty:
     with colf1:
         show_future_only = st.checkbox("Show only future sessions", value=True)
     with colf2:
-        ppt_filter = st.multiselect("Filter by PPT status", options=["Not Started", "In Progress", "Ready"])
+        ppt_filter = st.multiselect(
+            "Filter by PPT status",
+            options=["Not Started", "In Progress", "Ready"],
+        )
 
     if show_future_only:
         df_all = df_all[df_all["session_datetime"] >= datetime.now()]
